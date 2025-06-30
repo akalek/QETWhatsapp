@@ -1,93 +1,92 @@
 import os
 import json
 import requests
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# --- КОНФИГУРАЦИЯ (задать в Settings → Variables на Railway) ---
+# --- Конфигурация через переменные окружения Railway ---
+# Название вашего Gupshup-приложения
+GUPSHUP_APP_NAME = os.environ.get("QwetAPItest")
+# API-ключ Gupshup (см. Console → API keys)
+GUPSHUP_API_KEY  = os.environ.get("sk_4e29a41731fd4ddbad63f0de680678aa")
+# URL для отправки сообщений через Gupshup API
 GUPSHUP_API_URL  = "https://api.gupshup.io/sm/api/v1/msg"
-GUPSHUP_APP_NAME = os.environ["QwetAPItest"]  # из вашего Gupshup Dashboard, App settings → Name
-GUPSHUP_API_KEY  = os.environ["sk_4e29a41731fd4ddbad63f0de680678aa"]   # ваш Gupshup API key (запросите у devsupport или из консоли)
 
-# --- Загружаем каталог ---
+# Загружаем каталог товаров
 with open("products.json", encoding="utf-8") as f:
     catalog = json.load(f)
 
+# Ищем подходящие товары
 def find_products(query, diameter, power):
     q = query.lower()
-    cands = [
-        {**prod, "diff": abs(prod.get("power",0) - power)}
+    candidates = [
+        {**prod, "diff": abs(prod.get("power", 0) - power)}
         for prod in catalog
-        if prod.get("diameter")==diameter and any(s in q for s in prod.get("synonyms",[]))
+        if prod.get("diameter") == diameter and any(s in q for s in prod.get("synonyms", []))
     ]
-    cands.sort(key=lambda x: x["diff"])
-    return cands[:2]
+    candidates.sort(key=lambda x: x["diff"])
+    return candidates[:2]
 
-def send_msg(dest, msg_obj):
-    """Отправить одно сообщение через Gupshup API."""
+# Функция отправки одного сообщения через Gupshup API
+def send_to_gupshup(dest, message_obj):
     payload = {
         "source":      GUPSHUP_APP_NAME,
         "destination": dest,
-        "message":     msg_obj
+        "message":     message_obj
     }
     headers = {
         "Content-Type": "application/json",
         "apikey":       GUPSHUP_API_KEY
     }
     resp = requests.post(GUPSHUP_API_URL, headers=headers, json=payload)
-    # можно логировать: print("Gupshup send:", resp.status_code, resp.text)
     return resp
 
+# Webhook для входящих событий от Gupshup
 @app.route("/gupshup", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
-    # пропускаем все события кроме входящего сообщения
+    # Пропускаем все события, кроме входящего текстового сообщения
     if "message" not in data:
-        return ("", 200)
+        return "", 200
 
-    sender = data.get("sender")  # номер клиента
-    text   = data["message"].get("text","").strip()
-    parts  = text.split()
-    # если не «товар диаметр мощность» — подсказка:
+    sender = data.get("sender")
+    msg_text = data["message"].get("text", "").strip()
+    parts = msg_text.split()
+
+    # Ожидаем формат: "товар диаметр мощность"
     try:
-        diam  = int(parts[-2])
-        power = int(parts[-1])
+        diam = int(parts[-2])
+        powr = int(parts[-1])
         query = " ".join(parts[:-2])
-    except:
-        help_msg = {
-            "type":"text",
-            "text":(
-                "Пожалуйста, пришлите запрос в формате:\n"
-                "товар диаметр мощность\n"
-                "Пример: болгарка 125 1000"
-            )
-        }
-        send_msg(sender, help_msg)
-        return ("", 200)
+    except (ValueError, IndexError):
+        help_msg = {"type": "text", "text": (
+            "Пожалуйста, в формате: товар диаметр мощность\n"
+            "Пример: болгарка 125 1000"
+        )}
+        send_to_gupshup(sender, help_msg)
+        return "", 200
 
-    prods = find_products(query, diam, power)
-    if not prods:
-        send_msg(sender, {"type":"text","text":"Ничего не найдено по вашим параметрам."})
-        return ("", 200)
+    matches = find_products(query, diam, powr)
+    if not matches:
+        send_to_gupshup(sender, {"type":"text","text":"Ничего не найдено."})
+        return "", 200
 
-    # отправляем сначала фото, затем текст по каждому из двух найденных
-    for prod in prods:
-        # картинка
+    # Отправляем найденные товары: картинка + текст
+    for prod in matches:
         if prod.get("image_url"):
-            send_msg(sender, {"type":"image", "url": prod["image_url"]})
-        # текст
-        text_block = (
+            send_to_gupshup(sender, {"type":"image", "url": prod["image_url"]})
+        msg = (
             f"{prod['name']}\n"
             f"Диаметр: {prod['diameter']} мм\n"
             f"Мощность: {prod['power']} Вт\n"
-            f"Цена для физ. лиц — смотрите в Kaspi:\n"
-            f"{prod['kaspi_link']}"
+            f"Цена для физ. лиц: {prod['kaspi_link']}"
         )
-        send_msg(sender, {"type":"text", "text": text_block})
+        send_to_gupshup(sender, {"type":"text", "text": msg})
 
-    return ("", 200)
+    return "", 200
 
+# Запуск
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
