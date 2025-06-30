@@ -1,69 +1,93 @@
 import os
 import json
-from flask import Flask, request, jsonify
+import requests
+from flask import Flask, request
 
 app = Flask(__name__)
 
-# Загружаем каталог товаров из products.json
+# --- КОНФИГУРАЦИЯ (задать в Settings → Variables на Railway) ---
+GUPSHUP_API_URL  = "https://api.gupshup.io/sm/api/v1/msg"
+GUPSHUP_APP_NAME = os.environ["QwetAPItest"]  # из вашего Gupshup Dashboard, App settings → Name
+GUPSHUP_API_KEY  = os.environ["sk_4e29a41731fd4ddbad63f0de680678aa"]   # ваш Gupshup API key (запросите у devsupport или из консоли)
+
+# --- Загружаем каталог ---
 with open("products.json", encoding="utf-8") as f:
     catalog = json.load(f)
 
-# Функция поиска товаров по запросу, диаметру и мощности
 def find_products(query, diameter, power):
     q = query.lower()
-    # Фильтруем товары по диаметру и синонимам
-    candidates = [
-        {**prod, "diff": abs(prod.get("power", 0) - power)}
+    cands = [
+        {**prod, "diff": abs(prod.get("power",0) - power)}
         for prod in catalog
-        if prod.get("diameter") == diameter and any(s in q for s in prod.get("synonyms", []))
+        if prod.get("diameter")==diameter and any(s in q for s in prod.get("synonyms",[]))
     ]
-    # Сортировка по минимальной разнице мощности и выбор первых двух вариантов
-    candidates.sort(key=lambda x: x["diff"])
-    return candidates[:2]
+    cands.sort(key=lambda x: x["diff"])
+    return cands[:2]
 
-# Webhook для Gupshup (формат v2)
+def send_msg(dest, msg_obj):
+    """Отправить одно сообщение через Gupshup API."""
+    payload = {
+        "source":      GUPSHUP_APP_NAME,
+        "destination": dest,
+        "message":     msg_obj
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "apikey":       GUPSHUP_API_KEY
+    }
+    resp = requests.post(GUPSHUP_API_URL, headers=headers, json=payload)
+    # можно логировать: print("Gupshup send:", resp.status_code, resp.text)
+    return resp
+
 @app.route("/gupshup", methods=["POST"])
 def webhook():
-    # Получаем JSON без ошибки, даже если Content-Type не application/json
     data = request.get_json(silent=True) or {}
-    # Если это не событие message (например, sent/delivered), возвращаем 200 OK без контента
+    # пропускаем все события кроме входящего сообщения
     if "message" not in data:
-        return "", 200
+        return ("", 200)
 
-    msg = data["message"].get("text", "").strip()
-    parts = msg.split()
-    # Ожидаем формат: товар диаметр мощность
+    sender = data.get("sender")  # номер клиента
+    text   = data["message"].get("text","").strip()
+    parts  = text.split()
+    # если не «товар диаметр мощность» — подсказка:
     try:
-        diameter = int(parts[-2])
+        diam  = int(parts[-2])
         power = int(parts[-1])
         query = " ".join(parts[:-2])
-    except (ValueError, IndexError):
-        fallback = {"type": "text", "text": (
-            "Пожалуйста, пришлите запрос в формате: товар диаметр мощность\n"
-            "Пример: болгарка 125 1000"
-        )}
-        return jsonify({"messages": [fallback]})
+    except:
+        help_msg = {
+            "type":"text",
+            "text":(
+                "Пожалуйста, пришлите запрос в формате:\n"
+                "товар диаметр мощность\n"
+                "Пример: болгарка 125 1000"
+            )
+        }
+        send_msg(sender, help_msg)
+        return ("", 200)
 
-    matches = find_products(query, diameter, power)
-    if not matches:
-        nores = {"type": "text", "text": "Ничего не найдено по вашим параметрам."}
-        return jsonify({"messages": [nores]})
+    prods = find_products(query, diam, power)
+    if not prods:
+        send_msg(sender, {"type":"text","text":"Ничего не найдено по вашим параметрам."})
+        return ("", 200)
 
-    responses = []
-    for prod in matches:
-        text = (
+    # отправляем сначала фото, затем текст по каждому из двух найденных
+    for prod in prods:
+        # картинка
+        if prod.get("image_url"):
+            send_msg(sender, {"type":"image", "url": prod["image_url"]})
+        # текст
+        text_block = (
             f"{prod['name']}\n"
             f"Диаметр: {prod['diameter']} мм\n"
             f"Мощность: {prod['power']} Вт\n"
-            f"Цена для физ. лиц — смотрите в Kaspi:\n{prod['kaspi_link']}"
+            f"Цена для физ. лиц — смотрите в Kaspi:\n"
+            f"{prod['kaspi_link']}"
         )
-        # Медиа и текстовые сообщения
-        responses.append({"type": "image", "url": prod.get("image_url", "")})
-        responses.append({"type": "text", "text": text})
+        send_msg(sender, {"type":"text", "text": text_block})
 
-    return jsonify({"messages": responses})
+    return ("", 200)
 
-# Точка входа: Flask слушает порт из переменной окружения PORT или 5000 по умолчанию
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
