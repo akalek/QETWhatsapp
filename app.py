@@ -13,34 +13,33 @@ def find_products(query, diameter, power):
     q = query.lower()
     # Фильтруем товары по диаметру и синонимам
     candidates = [
-        {**prod, "diff": abs(prod["power"] - power)}
+        {**prod, "diff": abs(prod.get("power", 0) - power)}
         for prod in catalog
-        if prod.get("diameter") == diameter and
-           any(s in q for s in prod.get("synonyms", []))
+        if prod.get("diameter") == diameter and any(s in q for s in prod.get("synonyms", []))
     ]
-    # Сортировка по минимальной разнице мощности и выбор первых двух
+    # Сортировка по минимальной разнице мощности и выбор первых двух вариантов
     candidates.sort(key=lambda x: x["diff"])
     return candidates[:2]
 
 # Webhook для Gupshup (формат v2)
 @app.route("/gupshup", methods=["POST"])
 def webhook():
+    # Получаем JSON без ошибки, даже если Content-Type не application/json
     data = request.get_json(silent=True) or {}
-    # Если это не сообщение (например, delivery, sent), возвращаем 200 без контента
+    # Если это не событие message (например, sent/delivered), возвращаем 200 OK без контента
     if "message" not in data:
         return "", 200
 
     msg = data["message"].get("text", "").strip()
     parts = msg.split()
-    # Если запрос не в формате "товар диаметр мощность", отвечаем с подсказкой
+    # Ожидаем формат: товар диаметр мощность
     try:
         diameter = int(parts[-2])
         power = int(parts[-1])
         query = " ".join(parts[:-2])
     except (ValueError, IndexError):
         fallback = {"type": "text", "text": (
-            "Пожалуйста, пришлите запрос в формате: товар диаметр мощность
-"
+            "Пожалуйста, пришлите запрос в формате: товар диаметр мощность\n"
             "Пример: болгарка 125 1000"
         )}
         return jsonify({"messages": [fallback]})
@@ -53,17 +52,14 @@ def webhook():
     responses = []
     for prod in matches:
         text = (
-            f"{prod['name']}
-"
-            f"Диаметр: {prod['diameter']} мм
-"
-            f"Мощность: {prod['power']} Вт
-"
-            f"Цена для физ. лиц — смотрите в Kaspi:
-{prod['kaspi_link']}"
+            f"{prod['name']}\n"
+            f"Диаметр: {prod['diameter']} мм\n"
+            f"Мощность: {prod['power']} Вт\n"
+            f"Цена для физ. лиц — смотрите в Kaspi:\n{prod['kaspi_link']}"
         )
-        responses.append({"type": "image", "url": prod["image_url"]})
-        responses.append({"type": "text",  "text": text})
+        # Медиа и текстовые сообщения
+        responses.append({"type": "image", "url": prod.get("image_url", "")})
+        responses.append({"type": "text", "text": text})
 
     return jsonify({"messages": responses})
 
