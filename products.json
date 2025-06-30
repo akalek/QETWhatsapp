@@ -1,0 +1,22 @@
+[
+  {
+    "id": 1,
+    "name": "УШМ Makita GA5030",
+    "synonyms": ["болгарка","ушм","углошлифмашина"],
+    "diameter": 125,
+    "power": 720,
+    "price_b2b": 21000,
+    "kaspi_link": "https://kaspi.kz/shop/p/makita-ga5030-125mm-720w-STM",
+    "image_url": "https://example.com/images/makita.jpg"
+  },
+  {
+    "id": 2,
+    "name": "УШМ Bosch GWS 850 CE",
+    "synonyms": ["болгарка","ушм","углошлифмашина"],
+    "diameter": 125,
+    "power": 850,
+    "price_b2b": 23500,
+    "kaspi_link": "https://kaspi.kz/shop/p/bosch-gws850-125mm-850w-STM",
+    "image_url": "https://example.com/images/bosch.jpg"
+  }
+]
