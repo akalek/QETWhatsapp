@@ -1,92 +1,48 @@
 import os
-import json
-import requests
 from flask import Flask, request, jsonify
+import requests
 
 app = Flask(__name__)
 
-# --- Конфигурация через переменные окружения Railway ---
-# Название вашего Gupshup-приложения
-GUPSHUP_APP_NAME = os.environ.get("QwetAPItest")
-# API-ключ Gupshup (см. Console → API keys)
-GUPSHUP_API_KEY  = os.environ.get("sk_4e29a41731fd4ddbad63f0de680678aa")
-# URL для отправки сообщений через Gupshup API
-GUPSHUP_API_URL  = "https://api.gupshup.io/sm/api/v1/msg"
+# Ваш GUPSHUP API ключ (берётся из переменной окружения на Railway, Heroku и т.д.)
+GUPSHUP_API_KEY = os.environ.get("GUPSHUP_API_KEY", "sk_b63ae292d5484ca6ba3f0143838edb32")
+# Имя вашего WhatsApp-приложения в Gupshup (Access API → App Name)
+GUPSHUP_APP_NAME = os.environ.get("GUPSHUP_APP_NAME", "QwetAPItest")
 
-# Загружаем каталог товаров
-with open("products.json", encoding="utf-8") as f:
-    catalog = json.load(f)
+# Ендпоинт Gupshup для отправки сообщений
+GUPSHUP_SEND_URL = "https://api.gupshup.io/sm/api/v1/msg"
 
-# Ищем подходящие товары
-def find_products(query, diameter, power):
-    q = query.lower()
-    candidates = [
-        {**prod, "diff": abs(prod.get("power", 0) - power)}
-        for prod in catalog
-        if prod.get("diameter") == diameter and any(s in q for s in prod.get("synonyms", []))
-    ]
-    candidates.sort(key=lambda x: x["diff"])
-    return candidates[:2]
-
-# Функция отправки одного сообщения через Gupshup API
-def send_to_gupshup(dest, message_obj):
+@app.route("/gupshup", methods=["POST"])
+def gupshup_webhook():
+    data = request.get_json(force=True)
+    # Получили текст от пользователя
+    incoming_text = data.get("message", {}).get("text", "")
+    sender = data.get("sender") or data.get("source")
+    
+    # Подготовим простой эхо-ответ
+    reply_text = f"Вы написали: {incoming_text}"
+    
+    # Тело запроса к Gupshup Send API
     payload = {
-        "source":      GUPSHUP_APP_NAME,
-        "destination": dest,
-        "message":     message_obj
+        "source": GUPSHUP_APP_NAME,     
+        "destination": sender,          
+        "message": {
+            "type": "text",
+            "text": reply_text
+        }
     }
     headers = {
         "Content-Type": "application/json",
-        "apikey":       GUPSHUP_API_KEY
+        "apikey": GUPSHUP_API_KEY
     }
-    resp = requests.post(GUPSHUP_API_URL, headers=headers, json=payload)
-    return resp
-
-# Webhook для входящих событий от Gupshup
-@app.route("/gupshup", methods=["POST"])
-def webhook():
-    data = request.get_json(silent=True) or {}
-    # Пропускаем все события, кроме входящего текстового сообщения
-    if "message" not in data:
-        return "", 200
-
-    sender = data.get("sender")
-    msg_text = data["message"].get("text", "").strip()
-    parts = msg_text.split()
-
-    # Ожидаем формат: "товар диаметр мощность"
-    try:
-        diam = int(parts[-2])
-        powr = int(parts[-1])
-        query = " ".join(parts[:-2])
-    except (ValueError, IndexError):
-        help_msg = {"type": "text", "text": (
-            "Пожалуйста, в формате: товар диаметр мощность\n"
-            "Пример: болгарка 125 1000"
-        )}
-        send_to_gupshup(sender, help_msg)
-        return "", 200
-
-    matches = find_products(query, diam, powr)
-    if not matches:
-        send_to_gupshup(sender, {"type":"text","text":"Ничего не найдено."})
-        return "", 200
-
-    # Отправляем найденные товары: картинка + текст
-    for prod in matches:
-        if prod.get("image_url"):
-            send_to_gupshup(sender, {"type":"image", "url": prod["image_url"]})
-        msg = (
-            f"{prod['name']}\n"
-            f"Диаметр: {prod['diameter']} мм\n"
-            f"Мощность: {prod['power']} Вт\n"
-            f"Цена для физ. лиц: {prod['kaspi_link']}"
-        )
-        send_to_gupshup(sender, {"type":"text", "text": msg})
-
+    
+    # Вызываем Gupshup API, чтобы отправить ответ пользователю
+    resp = requests.post(GUPSHUP_SEND_URL, json=payload, headers=headers)
+    resp.raise_for_status()
+    
+    # Gupshup ждёт от нас HTTP 200 и пустое тело
     return "", 200
 
-# Запуск
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
