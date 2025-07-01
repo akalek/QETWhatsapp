@@ -1,48 +1,45 @@
 import os
-from flask import Flask, request
 import requests
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# В Variables на Railway нужно создать две переменные:
-# GUPSHUP_API_KEY       = ваш sk_… ключ из Gupshup (Access API Keys)
-# GUPSHUP_SOURCE_NUMBER = ваш WhatsApp-номер в Gupshup без '+', например '77021682964'
-GUPSHUP_API_KEY       = os.environ["GUPSHUP_API_KEY"]
-GUPSHUP_SOURCE_NUMBER = os.environ["GUPSHUP_SOURCE_NUMBER"]
+# Берём из переменных окружения
+GUPSHUP_API_KEY   = os.environ["GUPSHUP_API_KEY"]
+GUPSHUP_APP_NAME  = os.environ["GUPSHUP_APP_NAME"]   # ваш номер или имя приложения
+GUPSHUP_API_URL   = os.environ.get(
+    "GUPSHUP_API_URL",
+    "https://api.gupshup.io/wa/api/v1/msg"         # новый endpoint для WhatsApp CAPI
+)
 
 @app.route("/gupshup", methods=["POST"])
 def gupshup_webhook():
-    data = request.get_json(force=True) or {}
-    sender = data.get("sender") or data.get("from")
+    data = request.get_json(force=True)
+    # распакуем sender и текст
+    sender = data["sender"]
     text   = data.get("message", {}).get("text", "")
+    # формируем ответ
+    reply = f"Вы написали: «{text}»"
 
-    # Логируем входящую пару
-    app.logger.info("Webhook got: from=%s text=%s", sender, text)
-
-    if not sender or not text:
-        return "OK", 200
-
-    reply_text = f"Вы написали: «{text}»"
-    url = "https://api.gupshup.io/wa/api/v1/msg"
-    headers = {
-        "apikey":       GUPSHUP_API_KEY,
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
     payload = {
         "channel":     "whatsapp",
-        "source":      GUPSHUP_SOURCE_NUMBER,
+        "source":      GUPSHUP_APP_NAME,
         "destination": sender,
-        "message":     '{"type":"text","text":"%s"}' % reply_text
+        "message": {
+            "type": "text",
+            "text": {"body": reply}
+        }
     }
+    headers = {
+        "apikey":       GUPSHUP_API_KEY,
+        "Content-Type": "application/json"
+    }
+    resp = requests.post(GUPSHUP_API_URL, headers=headers, json=payload)
+    resp.raise_for_status()
 
-    # Логируем попытку отправки
-    app.logger.info("Sending Send-API payload: %s", payload)
-    resp = requests.post(url, headers=headers, data=payload)
-    app.logger.info("Send-API responded %s: %s", resp.status_code, resp.text)
-
-    return "OK", 200
+    return jsonify({"status": "sent"}), 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    # debug=True позволит видеть логи в дев-сервере (какие-то WARNING можно игнорировать)
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # Railway ждёт, что вы подхватите $PORT
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
