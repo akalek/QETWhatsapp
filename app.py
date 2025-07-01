@@ -1,74 +1,66 @@
+# app.py
 import os
 import json
-import logging
-from flask import Flask, request, jsonify
 import requests
+from flask import Flask, request
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-GUPSHUP_API_KEY  = os.environ["GUPSHUP_API_KEY"]
-GUPSHUP_APP_NAME = os.environ["GUPSHUP_APP_NAME"]  # точное имя вашего App
+# из переменных окружения
+GUPSHUP_API_KEY = os.getenv("GUPSHUP_API_KEY", "")
+GUPSHUP_APP_NAME = os.getenv("GUPSHUP_APP_NAME", "")
 
-# URL для отправки in-session ответов
-SEND_URL = "https://api.gupshup.io/wa/api/v1/msg"
+if not GUPSHUP_API_KEY or not GUPSHUP_APP_NAME:
+    raise RuntimeError("Не задан GUPSHUP_API_KEY или GUPSHUP_APP_NAME")
 
 @app.route("/gupshup", methods=["POST"])
 def gupshup_webhook():
-    data = request.get_json(force=True)
-    sender = None
-    text   = None
+    payload = request.get_json(force=True)
 
-    # 1) Пробуем Gupshup v2
-    if "sender" in data and "message" in data and "text" in data["message"]:
-        sender = data["sender"]
-        text   = data["message"]["text"]
+    # Gupshup v2: тело лежит в payload["data"]
+    data = payload.get("data", {})
+    sender = data.get("sender")              # "whatsapp:+7702xxxxxxx"
+    incoming = data.get("message", {}).get("text")
 
-    # 2) Пробуем Meta v3
-    elif "entry" in data:
-        try:
-            changes = data["entry"][0]["changes"][0]["value"]
-            msg     = changes["messages"][0]
-            sender  = msg.get("from")
-            if msg["type"] == "text":
-                text = msg["text"]["body"]
-        except Exception:
-            pass
-
-    if not sender or not text:
+    if not sender or not incoming:
         app.logger.error("Не получили sender/text в webhook")
-        return "Bad Request", 400
+        return "", 400
 
-    app.logger.info(f"Incoming from {sender}: {text!r}")
+    # выдираем чистый номер без префикса
+    number = sender.split(":")[-1]
 
-    # Вот тут ваша логика анализа текста и поиска по products.json, например:
-    # response_text = find_product_info(text)
+    # здесь ваша логика: например, эхо-бот
+    reply_text = f"Вы написали: «{incoming}»"
 
-    # Для примера просто эхо-ответ:
-    response_text = f"Вы написали: {text}"
-
-    # Отправляем in-session ответ
-    payload = {
+    # сформировать form-data для CAPI
+    form = {
         "channel":     "whatsapp",
-        "source":      sender,              # бот отвечает на тот же номер, откуда пришёл
-        "destination": sender,
-        "src.name":    GUPSHUP_APP_NAME,
-        "message": json.dumps({
+        "source":      GUPSHUP_APP_NAME,
+        "destination": number,
+        "message":     json.dumps({
             "type": "text",
-            "text": response_text
+            "text": reply_text
         })
     }
-    headers = {
-        "apikey":       GUPSHUP_API_KEY,
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    resp = requests.post(SEND_URL, headers=headers, data=payload)
-    if resp.status_code != 200:
-        app.logger.error(f"Ошибка отправки в Gupshup CAPI {resp.status_code}: {resp.text}")
-    else:
-        app.logger.info(f"Sent echo to {sender}")
 
-    return jsonify({}), 200
+    headers = {
+        "apikey":        GUPSHUP_API_KEY,
+        "Content-Type":  "application/x-www-form-urlencoded"
+    }
+
+    # шлём ответ
+    resp = requests.post(
+        "https://api.gupshup.io/wa/api/v1/msg",
+        headers=headers,
+        data=form
+    )
+
+    if not resp.ok:
+        app.logger.error(f"Ошибка при отправке ответа: {resp.status_code} — {resp.text}")
+
+    # Gupshup ждёт 200
+    return "", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    # в продакшене запускается через WSGI, здесь — для локального теста
+    app.run(host="0.0.0.0", port=8080)
