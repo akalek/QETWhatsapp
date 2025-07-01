@@ -1,56 +1,74 @@
 import os
+import json
+import logging
+from flask import Flask, request, jsonify
 import requests
-from flask import Flask, request
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Эти два значения надо определить в переменных окружения Railway (или локально перед запуском):
-GUPSHUP_API_KEY  = os.environ["GUPSHUP_API_KEY"]   # ваш sk_… ключ
-GUPSHUP_APP_NAME = os.environ["GUPSHUP_APP_NAME"]  # точное имя вашего App в Dashboard, например "QwetAPItest"
+GUPSHUP_API_KEY  = os.environ["GUPSHUP_API_KEY"]
+GUPSHUP_APP_NAME = os.environ["GUPSHUP_APP_NAME"]  # точное имя вашего App
 
-# Точка входа для вебхука Gupshup
+# URL для отправки in-session ответов
+SEND_URL = "https://api.gupshup.io/wa/api/v1/msg"
+
 @app.route("/gupshup", methods=["POST"])
 def gupshup_webhook():
     data = request.get_json(force=True)
-    # В формате v2 у вас будет поле "sender" и вложенный message.text
-    sender = data.get("sender")
-    text   = data.get("message", {}).get("text")
+    sender = None
+    text   = None
+
+    # 1) Пробуем Gupshup v2
+    if "sender" in data and "message" in data and "text" in data["message"]:
+        sender = data["sender"]
+        text   = data["message"]["text"]
+
+    # 2) Пробуем Meta v3
+    elif "entry" in data:
+        try:
+            changes = data["entry"][0]["changes"][0]["value"]
+            msg     = changes["messages"][0]
+            sender  = msg.get("from")
+            if msg["type"] == "text":
+                text = msg["text"]["body"]
+        except Exception:
+            pass
 
     if not sender or not text:
         app.logger.error("Не получили sender/text в webhook")
-        return "", 400
+        return "Bad Request", 400
 
-    # Формируем payload для in-session ответа
+    app.logger.info(f"Incoming from {sender}: {text!r}")
+
+    # Вот тут ваша логика анализа текста и поиска по products.json, например:
+    # response_text = find_product_info(text)
+
+    # Для примера просто эхо-ответ:
+    response_text = f"Вы написали: {text}"
+
+    # Отправляем in-session ответ
     payload = {
-        "channel":      "whatsapp",
-        "source":       GUPSHUP_APP_NAME,
-        "destination":  sender,
-        "src.name":     GUPSHUP_APP_NAME,
-        # message надо передать с JSON внутри form-data
-        "message":      '{"type":"text","text":"Автоответ: %s"}' % text
+        "channel":     "whatsapp",
+        "source":      sender,              # бот отвечает на тот же номер, откуда пришёл
+        "destination": sender,
+        "src.name":    GUPSHUP_APP_NAME,
+        "message": json.dumps({
+            "type": "text",
+            "text": response_text
+        })
     }
-
     headers = {
-        "apikey":        GUPSHUP_API_KEY,
-        "Content-Type":  "application/x-www-form-urlencoded"
+        "apikey":       GUPSHUP_API_KEY,
+        "Content-Type": "application/x-www-form-urlencoded"
     }
-
-    # POST в Gupshup CAPI
-    resp = requests.post(
-        "https://api.gupshup.io/wa/api/v1/msg",
-        data=payload,
-        headers=headers,
-        timeout=5
-    )
-
+    resp = requests.post(SEND_URL, headers=headers, data=payload)
     if resp.status_code != 200:
-        app.logger.error(f"Ошибка при отправке ответа: {resp.status_code} — {resp.text}")
+        app.logger.error(f"Ошибка отправки в Gupshup CAPI {resp.status_code}: {resp.text}")
     else:
-        app.logger.info(f"Отправлено сообщение: {resp.json()}")
+        app.logger.info(f"Sent echo to {sender}")
 
-    # Gupshup ждёт 200
-    return "", 200
+    return jsonify({}), 200
 
 if __name__ == "__main__":
-    # порт 8080 обязательный для Railway
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
