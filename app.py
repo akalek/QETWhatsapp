@@ -7,17 +7,15 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# В переменных Railway или локально должны быть:
-GUPSHUP_API_KEY  = os.environ.get("GUPSHUP_API_KEY", "")
-GUPSHUP_APP_NAME = os.environ.get("GUPSHUP_APP_NAME", "")
+GUPSHUP_API_KEY  = os.environ["GUPSHUP_API_KEY"]
+GUPSHUP_APP_NAME = os.environ["GUPSHUP_APP_NAME"]
 
-# --- GET-запрос для верификации ---
+# --- 1) GET-запрос для верификации вебхука ---
 @app.route("/gupshup", methods=["GET"])
 def verify():
-    # Gupshup просто проверяет, что URL отрабатывает 200
     return "OK", 200
 
-# --- POST-запрос: сюда Gupshup шлёт входящие сообщения ---
+# --- 2) POST-запрос от Gupshup с входящим сообщением ---
 @app.route("/gupshup", methods=["POST"])
 def gupshup_webhook():
     data = request.get_json(force=True)
@@ -27,7 +25,7 @@ def gupshup_webhook():
         app.logger.error("Не получили sender/text в webhook")
         return "Bad Request", 400
 
-    # Ответ бота — просто эхо
+    # Собираем in-session ответ (эхо)
     payload = {
         "channel":      "whatsapp",
         "source":       GUPSHUP_APP_NAME,
