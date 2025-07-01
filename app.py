@@ -4,62 +4,64 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# 1) Берём из ENV ключ и App ID
-GUPSHUP_API_KEY = os.environ["GUPSHUP_API_KEY"]
-GUPSHUP_APP_ID  = os.environ["GUPSHUP_APP_ID"]
+# -----------------------------------
+# 1) Читаем из окружения
+# -----------------------------------
+GUPSHUP_API_KEY       = os.environ["GUPSHUP_API_KEY"]
+GUPSHUP_SOURCE_NUMBER = os.environ["GUPSHUP_SOURCE_NUMBER"]
 
-# 2) Новый CAPI-эндпоинт
-GUPSHUP_SEND_URL = "https://api.gupshup.io/whatsapp/v1/messages"
+# -----------------------------------
+# 2) Правильный эндпоинт для формы:
+# -----------------------------------
+WA_SEND_URL = "https://api.gupshup.io/wa/api/v1/msg"
 
 @app.route("/gupshup", methods=["POST"])
 def gupshup_webhook():
-    data = request.get_json(force=True)
-    app.logger.info("Incoming webhook: %s", data)
+    data = request.get_json(force=True) or {}
+    app.logger.info("Webhook payload: %s", data)
 
-    # 3) Поле sender может быть в разных местах, попробуем несколько вариантов
-    sender = (
-        data.get("sender")
-        or data.get("source")
-        or data.get("payload", {}).get("sender")
-        or data.get("payload", {}).get("from")
-    )
+    # -----------------------------------
+    # 3) Извлекаем телефон отправителя
+    # -----------------------------------
+    sender = data.get("sender") or data.get("source") \
+          or data.get("payload", {}).get("sender") \
+          or data.get("payload", {}).get("from")
     if not sender:
-        app.logger.warning("Не могу найти номер отправителя, пропускаю")
+        app.logger.warning("No sender found, ignoring")
         return "", 200
 
-    # 4) Считываем текст входящего сообщения
+    # -----------------------------------
+    # 4) Извлекаем текст сообщения
+    # -----------------------------------
     text = ""
     if "message" in data and isinstance(data["message"], dict):
-        text = data["message"].get("text") or ""
+        text = data["message"].get("text", "")
     else:
         text = data.get("text", "")
 
-    # 5) Готовим новый payload под CAPI-запрос
+    # -----------------------------------
+    # 5) Формируем ответ
+    # -----------------------------------
+    reply = f"Вы написали: «{text}»"
     payload = {
-        "appId": GUPSHUP_APP_ID,
-        "to": sender,
-        "type": "text",
-        "text": {
-            "body": f"Вы написали: {text}"
-        }
+        "channel":     "whatsapp",
+        "source":      GUPSHUP_SOURCE_NUMBER,
+        "destination": sender,
+        "message":     '{"type":"text","text":"%s"}' % reply
     }
     headers = {
         "apikey":        GUPSHUP_API_KEY,
-        "Content-Type":  "application/json"
+        "Content-Type":  "application/x-www-form-urlencoded"
     }
 
-    # 6) Отправляем ответ
-    resp = requests.post(GUPSHUP_SEND_URL, json=payload, headers=headers)
-    if resp.status_code != 201 and resp.status_code != 200:
-        app.logger.error(
-            "Ошибка отправки в Gupshup CAPI %s: %s",
-            resp.status_code, resp.text
-        )
-    else:
-        app.logger.info("Успешно отправили ответ, messageId: %s",
-                        resp.json().get("messageId"))
+    app.logger.info("Sending to WA API: %s", payload)
+    resp = requests.post(WA_SEND_URL, headers=headers, data=payload)
+    app.logger.info("WA API responded %s: %s", resp.status_code, resp.text)
+
+    # Мы всегда возвращаем 200, чтобы Gupshup не дергал повторно
     return "", 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    # debug=False безопасно для Railway, предупреждение можно игнорировать
+    app.run(host="0.0.0.0", port=port, debug=False)
